@@ -5,13 +5,13 @@ This project was a challenging yet rewarding experience, taking approximately
 Here's an overview of the application and its features:
 
 
-Application Overview
+Application Overview:
 
 The project is a client-server system enabling users to subscribe and unsubscribe
 to various topics to receive messages. The server facilitates this interaction
 using both TCP and UDP connections:
--TCP: Manages client-server communication, including subscriptions.
--UDP: Used for efficient message delivery to subscribed clients.
+    -TCP: Manages client-server communication, including subscriptions.
+    -UDP: Used for efficient message delivery to subscribed clients.
 
 
 Key Features:
@@ -33,16 +33,16 @@ message type, the message itself, and the sender's IP and port.
 
 Implementation Details:
 
--Data Integrity: The code ensures proper handling of all operations to avoid data loss and 
+    - Data Integrity: The code ensures proper handling of all operations to avoid data loss and 
 communication issues.
--Wildcard Topics: Topics support wildcard patterns for flexible subscriptions.
--Unique Client IDs: Duplicate IDs are not allowed. If a client attempts to connect with an existing 
+    - Wildcard Topics: Topics support wildcard patterns for flexible subscriptions.
+    - Unique Client IDs: Duplicate IDs are not allowed. If a client attempts to connect with an existing 
 ID, the connection is automatically terminated.
--Server Shutdown: When the server shuts down, all connected clients are gracefully disconnected.
--Efficient Networking: The Nagle algorithm is disabled for improved real-time communication.
--Resource Management: Memory allocation for file descriptors and topic lists is static, with a limit
+    - Server Shutdown: When the server shuts down, all connected clients are gracefully disconnected.
+    - Efficient Networking: The Nagle algorithm is disabled for improved real-time communication.
+    - Resource Management: Memory allocation for file descriptors and topic lists is static, with a limit
 on the number of concurrent clients.
--Byte Order: Network byte order conversions are correctly handled throughout.
+    -Byte Order: Network byte order conversions are correctly handled throughout.
 
 This project showcases a custom application-layer protocol designed for efficient and reliable
 communication between clients and the server. It was a rewarding experience, improving my understanding
