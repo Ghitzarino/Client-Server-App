@@ -1,64 +1,49 @@
-        323CC - Ghita Alexandru - Tema 2 - PCOM
+TCP and UDP Client-Server Application
 
-        --Aplicatie client-server TCP si UDP--
+This project was a challenging yet rewarding experience, taking approximately 
+25-30 hours over the course of a week to fully implement the functionality. 
+Here's an overview of the application and its features:
 
 
-    Din punctul meu de vedere, tema s-a dovedit a fi dificila ca si dificultate,
-dar am avut de invatat foarte multe din ea. A durat aproximativ 25-30 de ore pe
-parcursul unei saptamani pentru a implementa toate cerintele.
+Application Overview
+The project is a client-server system enabling users to subscribe and unsubscribe
+to various topics to receive messages. The server facilitates this interaction
+using both TCP and UDP connections:
 
-Functionalitatea aplicatiei:
+-TCP: Manages client-server communication, including subscriptions.
+-UDP: Used for efficient message delivery to subscribed clients.
 
-    Aplicatia reprezinta un sistem de subscribe si unsubscribe a unor
-utilizatori la anumite topicuri pe care primesc mesaje, realizat prin
-intermediul unui server, care foloseste conexiuni TCP pentru server-client si
-UDP pentru server-mesaje.
 
-    Implementarea pune in evidenta protocolul aplicatie creat peste TCP pentru a
-transmite corect si eficient mesajele si pentru a abona si dezabona clientii.
+Key Features:
 
-Conexiunea initiala:
+1) Initial Connection
+When a client connects to the server, it sends a START packet containing a unique
+client ID. The server uses this ID to register and track the connection.
 
-    Cand un client se conecteaza la server, acesta trimite un pachet de tip 
-START catre server. Acest pachet contine un ID unic pentru care se realizeaza si 
-memoreaza conexiunea noua.
+2) Subscription Management
+Clients can subscribe to a topic by sending a SUBSCRIBE packet with their ID and the topic name.
+The server maintains a mapping of clients and their subscribed topics to facilitate message delivery.
+Unsubscriptions are handled similarly, ensuring the topic list for each client stays up to date.
 
-Subscribe, unsubscribe la un topic:
+3) Message Transmission
+Messages sent to a topic are relayed by the server to all subscribed clients.
+Messages are structured in UDP_TO_CLIENT_PACKET format, containing details such as the topic, 
+message type, the message itself, and the sender's IP and port.
 
-    Un client poate sa se aboneze la un anumit topic, trimitand un pachet de tip 
-SUBSCRIBE catre server. Acest pachet contine ID-ul clientului si numele
-topicului la care doreste sa se aboneze.
-    Serverul primeste acest pachet si retine intr-o structura de date toate
-topicurile la care s-a abonat fiecare client, pentru a facilita trimiterea 
-mesajelor catre abonati.
-    Prin aceeasi metoda se realizeaza si UNSUBSCRIBE, actualizand lista de
-topicuri a clientului.
 
-Trimiterea si primirea de mesaje:
+Implementation Details:
 
-    Atunci cand un client primeste un mesaj pe un topic la care este abonat,
-serverul trimite mesajul catre client. Mesajul este structurat intr-un pachet de
-tip UDP_TO_CLIENT_PACKET, care contine informatii despre topic, tipul de mesaj,
-mesajul, ip-ul si portul celui care trimite mesajul.
+-Data Integrity: The code ensures proper handling of all operations to avoid data loss and 
+communication issues.
+-Wildcard Topics: Topics support wildcard patterns for flexible subscriptions.
+-Unique Client IDs: Duplicate IDs are not allowed. If a client attempts to connect with an existing 
+ID, the connection is automatically terminated.
+-Server Shutdown: When the server shuts down, all connected clients are gracefully disconnected.
+-Efficient Networking: The Nagle algorithm is disabled for improved real-time communication.
+-Resource Management: Memory allocation for file descriptors and topic lists is static, with a limit
+on the number of concurrent clients.
+-Byte Order: Network byte order conversions are correctly handled throughout.
 
-Observatii:
-
--Intregul cod este gestionat in mod corespunzator pentru a evita pierderea de date
-sau alte probleme care pot aparea in timpul comunicarii client-server.
-
--Topicurile functioneaza inclusiv cu wildcarduri.
-
--Mesajele se trimit doar la clientii care sunt abonati la respectivul topic.
-
--Algorimtul lui Nagle a fost dezactivat in cod.
-
--Nu pot exista 2 clienti cu acelasi ID, iar daca se incearca conectarea cu un ID
-deja folosit, atunci clientul se inchide automat. De asemenea, toti clientii sunt
-inchisi la inchiderea serverului.
-
--Se respecta conversiile de byte order.
-
--Se afiseaza doar mesajele cerute atat in server, cat si in client.
-
--Numarul de clienti care se pot conecta la server este limitat, alocarea de memorie
-fiind statica la pool-ul de file descriptori si la lista de topicuri.
+This project showcases a custom application-layer protocol designed for efficient and reliable
+communication between clients and the server. It was a rewarding experience, improving my understanding
+of networking and system design.
