@@ -1,174 +1,354 @@
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-
 #include "common.h"
 
-#define MAX_CONNECTIONS 32
+int match_topic(const char *topic, const char *pattern) {
+  while (*topic && *pattern) {
+    if (*pattern == '+') {
+      // Match one level
+      while (*topic && *topic != '/') {
+        topic++;
+      }
+      pattern++;
+    } else if (*pattern == '*') {
+      pattern++;
+      // If pattern has reached the end, match all remaining levels
+      if (*pattern == '\0') {
+        return 1;
+      }
+      pattern++;
 
-void run_chat_multi_server(int listenfd) {
+      // Find the next occurrence of the word following '*'
+      const char *next_pattern_word = pattern;
+
+      // Move pattern to the next '/'
+      while (*pattern && *pattern != '/') {
+        pattern++;
+      }
+
+      // Search for the matching topic
+      while (*topic) {
+        if (strncmp(topic, next_pattern_word, pattern - next_pattern_word) ==
+                0 &&
+            (*(topic + (pattern - next_pattern_word)) == '/' ||
+             *(topic + (pattern - next_pattern_word)) == '\0')) {
+          break;
+        }
+        topic++;
+      }
+      // If no match found, return false
+      if (*topic == '\0') {
+        return 0;
+      }
+      // Move topic to the end of the matched word
+      topic += pattern - next_pattern_word;
+    } else if (*topic != *pattern) {
+      return 0;
+    } else {
+      topic++;
+      pattern++;
+    }
+  }
+
+  return *topic == '\0' && *pattern == '\0';
+}
+
+void run_chat_multi_server(int tcp_listenfd, int udp_listenfd) {
   struct pollfd poll_fds[MAX_CONNECTIONS];
-  int num_clients = 1;
+  memset(poll_fds, 0, sizeof(poll_fds));
+
+  int num_clients = 0, num_topics = 0;
   int rc;
 
-  // Initialize topic subscriptions for clients
-  char topics[MAX_CONNECTIONS][MAX_TOPIC_LEN + 1];
+  // Structures for sending/receiving packets to/from TCP/UDP
+  struct tcp_packet recv_tcp_packet;
+  struct udp_to_server_packet recv_udp_packet;
+  struct udp_to_client_packet sent_udp_packet;
+  struct client_topics topics[MAX_CONNECTIONS];
   memset(topics, 0, sizeof(topics));
 
-  struct chat_packet received_packet;
-
-  // Set up socket listenfd for listening
-  rc = listen(listenfd, MAX_CONNECTIONS);
+  // Set up TCP socket for listening
+  rc = listen(tcp_listenfd, MAX_CONNECTIONS);
   DIE(rc < 0, "listen");
 
-  // Add the new file descriptor (listening socket) to the set
-  poll_fds[0].fd = listenfd;
+  // Configure descriptor for stdin
+  poll_fds[0].fd = STDIN_FILENO;
   poll_fds[0].events = POLLIN;
 
+  // Add TCP socket to the polling set
+  poll_fds[1].fd = tcp_listenfd;
+  poll_fds[1].events = POLLIN;
+
+  // Add UDP socket to the polling set
+  poll_fds[2].fd = udp_listenfd;
+  poll_fds[2].events = POLLIN;
+
+  num_clients += 3;  // TCP, UDP and STDIN sockets
+
   while (1) {
+    int end = 0;
     rc = poll(poll_fds, num_clients, -1);
     DIE(rc < 0, "poll");
 
     for (int i = 0; i < num_clients; i++) {
       if (poll_fds[i].revents & POLLIN) {
-        if (poll_fds[i].fd == listenfd) {
-          // A connection request has arrived on the listening socket
+        if (poll_fds[i].fd == tcp_listenfd) {
+          // New TCP client connection
           struct sockaddr_in cli_addr;
           socklen_t cli_len = sizeof(cli_addr);
           int newsockfd =
-              accept(listenfd, (struct sockaddr *)&cli_addr, &cli_len);
+              accept(tcp_listenfd, (struct sockaddr *)&cli_addr, &cli_len);
           DIE(newsockfd < 0, "accept");
 
-          // Add the new socket returned by accept() to the set of file
-          // descriptors
-          poll_fds[num_clients].fd = newsockfd;
-          poll_fds[num_clients].events = POLLIN;
-          num_clients++;
+          // Disable Nagle algorithm
+          int flag = 1;
+          if (setsockopt(newsockfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag,
+                         sizeof(int)) < 0) {
+            perror("setsockopt TCP_NODELAY failed");
+          }
 
-          // Get the client id
-          int rc = recv_all(poll_fds[i].fd, &received_packet,
-                            sizeof(received_packet));
-          DIE(rc < 0, "recv");
+          // Get the client ID
+          int rc =
+              recv_all(newsockfd, &recv_tcp_packet, sizeof(recv_tcp_packet));
+          DIE(rc < 0, "recv_all");
 
-          printf("New client %s connected from %s:%d.\n",
-                 received_packet.client_id, inet_ntoa(cli_addr.sin_addr),
-                 ntohs(cli_addr.sin_port));
-        } else {
-          // Data is available to be read on one of the client sockets
-          int rc = recv_all(poll_fds[i].fd, &received_packet,
-                            sizeof(received_packet));
-          DIE(rc < 0, "recv");
+          int ok = 1;
 
-          if (rc == 0) {
-            // The connection has been closed by the client
-            printf("Client %d disconnected\n", poll_fds[i].fd);
-            close(poll_fds[i].fd);
-
-            // Remove the closed socket from the set
-            for (int j = i; j < num_clients - 1; j++) {
-              poll_fds[j] = poll_fds[j + 1];
+          for (int j = 0; j < num_topics; j++) {
+            if (strcmp(topics[j].client_id, recv_tcp_packet.client_id) == 0 &&
+                topics[j].active == 1) {
+              // Client already connected
+              ok = 0;
+              close(newsockfd);
+              break;
+            } else if (strcmp(topics[j].client_id, recv_tcp_packet.client_id) ==
+                       0) {
+              // Client was connected before
+              ok = -1;
+              topics[j].active = 1;
+              topics[j].client_fd = newsockfd;
+              break;
             }
+          }
 
-            num_clients--;
+          // New client
+          if (ok == 1) {
+            // Add the new TCP client socket to the polling set
+            poll_fds[num_clients].fd = newsockfd;
+            poll_fds[num_clients].events = POLLIN;
+            num_clients++;
+
+            strcpy(topics[num_topics].client_id, recv_tcp_packet.client_id);
+            topics[num_topics].active = 1;
+            topics[num_topics].client_fd = newsockfd;
+            num_topics++;
+
+            printf("New client %s connected from %s:%d.\n",
+                   recv_tcp_packet.client_id, inet_ntoa(cli_addr.sin_addr),
+                   ntohs(cli_addr.sin_port));
+          } else if (ok == 0) {
+            printf("Client %s already connected.\n", recv_tcp_packet.client_id);
           } else {
-            // Process the received packet based on its type
-            switch (received_packet.type) {
-              case SUBSCRIBE:
-                strcpy(topics[i], received_packet.topic);
-                printf("Client %d subscribed to topic: %s\n", poll_fds[i].fd,
-                       received_packet.topic);
-                break;
-              case UNSUBSCRIBE:
-                topics[i][0] = '\0';  // Unsubscribe by clearing the topic
-                printf("Client %d unsubscribed from topic: %s\n",
-                       poll_fds[i].fd, received_packet.topic);
-                break;
-              case EXIT:
-                printf("Client %d requested to exit\n", poll_fds[i].fd);
-                close(poll_fds[i].fd);
+            // Update the sock fd for the client
+            poll_fds[num_clients].fd = newsockfd;
+            poll_fds[num_clients].events = POLLIN;
+            num_clients++;
 
-                // Remove the closed socket from the set
-                for (int j = i; j < num_clients - 1; j++) {
-                  poll_fds[j] = poll_fds[j + 1];
-                  strcpy(topics[j], topics[j + 1]);
-                }
+            printf("New client %s connected from %s:%d.\n",
+                   recv_tcp_packet.client_id, inet_ntoa(cli_addr.sin_addr),
+                   ntohs(cli_addr.sin_port));
+          }
 
-                num_clients--;
-                break;
-              case MESSAGE:
-                // Broadcast the message to clients subscribed to the topic
-                printf("Received message from client %d on topic %s: %s\n",
-                       poll_fds[i].fd, received_packet.topic,
-                       received_packet.message);
-                for (int j = 0; j < num_clients; j++) {
-                  if (poll_fds[j].fd != listenfd &&
-                      strcmp(topics[j], received_packet.topic) == 0) {
-                    // Send the message to clients subscribed to the same topic
-                    rc = send_all(poll_fds[j].fd, &received_packet,
-                                  sizeof(received_packet));
-                    DIE(rc <= 0, "send_all");
-                  }
+        } else if (poll_fds[i].fd == udp_listenfd) {
+          // Receive message from UDP client
+          struct sockaddr_in cli_addr;
+          socklen_t cli_len = sizeof(cli_addr);
+          rc = recvfrom(udp_listenfd, &recv_udp_packet, sizeof(recv_udp_packet),
+                        0, (struct sockaddr *)&cli_addr, &cli_len);
+          DIE(rc < 0, "recvfrom");
+
+          // Build the sending package with ip and port
+          sent_udp_packet.data_type = recv_udp_packet.data_type;
+          memcpy(sent_udp_packet.message, recv_udp_packet.message, MSG_MAXSIZE);
+          strcpy(sent_udp_packet.topic, recv_udp_packet.topic);
+          sent_udp_packet.sin_addr = cli_addr.sin_addr;
+          sent_udp_packet.sin_port = cli_addr.sin_port;
+
+          // Send the package to the subscriber
+          for (int j = 0; j < num_topics; j++) {
+            if (topics[j].active) {
+              for (int k = 0; k < topics[j].size; k++) {
+                if (match_topic(recv_udp_packet.topic, topics[j].topics[k])) {
+                  int rc = send_all(topics[j].client_fd, &sent_udp_packet,
+                                    sizeof(sent_udp_packet));
+                  DIE(rc < 0, "send_all");
+                  break;
                 }
-                break;
-              default:
-                printf("Unknown packet type received from client %d\n",
-                       poll_fds[i].fd);
-                break;
+              }
             }
+          }
+        } else if (poll_fds[i].fd == STDIN_FILENO) {
+          // Check for server exit
+          char buf[5];
+          if (fgets(buf, sizeof(buf), stdin) != NULL &&
+              strncmp(buf, "exit", 4) == 0) {
+            // Close all TCP client connections
+            for (int i = 3; i < num_clients; i++) {
+              if (poll_fds[i].fd != -1) {
+                close(poll_fds[i].fd);
+                poll_fds[i].fd = -1;
+              }
+            }
+
+            // Close the server
+            end = 1;
+            break;
+          }
+        } else {
+          // TCP client message
+          int rc = recv_all(poll_fds[i].fd, &recv_tcp_packet,
+                            sizeof(recv_tcp_packet));
+          DIE(rc < 0, "recv_all");
+
+          // Process the received packet based on its type
+          switch (recv_tcp_packet.type) {
+            case SUBSCRIBE:
+              for (int j = 0; j < num_topics; j++) {
+                // Match the client ID
+                if (topics[j].active &&
+                    strcmp(topics[j].client_id, recv_tcp_packet.client_id) ==
+                        0) {
+                  int ok = 1;
+
+                  // Check to not be duplicate
+                  for (int k = 0; k < topics[j].size; k++) {
+                    if (strcmp(topics[j].topics[k], recv_tcp_packet.topic) ==
+                        0) {
+                      ok = 0;
+                      break;
+                    }
+                  }
+
+                  // Add the new topic to the topics list of the client
+                  if (ok) {
+                    strcpy(topics[j].topics[topics[j].size],
+                           recv_tcp_packet.topic);
+                    topics[j].size++;
+                  }
+
+                  break;
+                }
+              }
+
+              break;
+            case UNSUBSCRIBE:
+
+              for (int j = 0; j < num_topics; j++) {
+                // Match the client ID
+                if (topics[j].active &&
+                    strcmp(topics[j].client_id, recv_tcp_packet.client_id) ==
+                        0) {
+                  for (int k = 0; k < topics[j].size; k++) {
+                    // Delete the topic
+                    if (strcmp(topics[j].topics[k], recv_tcp_packet.topic) ==
+                        0) {
+                      for (int l = k; l < topics[j].size; l++) {
+                        strcpy(topics[j].topics[l], topics[j].topics[l + 1]);
+                      }
+                      topics[j].size--;
+                      break;
+                    }
+                  }
+                  break;
+                }
+              }
+
+              break;
+            case EXIT:
+              printf("Client %s disconnected.\n", recv_tcp_packet.client_id);
+              close(poll_fds[i].fd);
+
+              // Remove the closed socket from the poll
+              for (int j = i; j < num_clients; j++) {
+                poll_fds[j] = poll_fds[j + 1];
+              }
+
+              // Mark the client topics inactive
+              for (int j = 0; j < num_topics; j++) {
+                if (strcmp(topics[j].client_id, recv_tcp_packet.client_id) ==
+                    0) {
+                  topics[j].active = 0;
+                }
+              }
+
+              num_clients--;
+              break;
+            default:
+              break;
           }
         }
       }
     }
+
+    if (end) {
+      break;
+    }
   }
+
+  close(tcp_listenfd);
+  close(udp_listenfd);
 }
 
 int main(int argc, char *argv[]) {
   setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 
   if (argc != 2) {
-    printf("\n Usage: %s <port>\n", argv[0]);
+    // printf("\n Usage: %s <PORT>\n", argv[0]);
     return 1;
   }
 
-  // Parse the port as a number
+  // Parse the port number
   uint16_t port;
   int rc = sscanf(argv[1], "%hu", &port);
   DIE(rc != 1, "Given port is invalid");
 
-  // Obtain a TCP socket for receiving connections
-  int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-  DIE(listenfd < 0, "socket");
+  // Create TCP socket for accepting connections
+  int tcp_listenfd = socket(AF_INET, SOCK_STREAM, 0);
+  DIE(tcp_listenfd < 0, "socket");
 
-  // Set up server address structure
-  struct sockaddr_in serv_addr;
-  socklen_t socket_len = sizeof(struct sockaddr_in);
+  // Disable Nagle algorithm
+  int flag = 1;
+  if (setsockopt(tcp_listenfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag,
+                 sizeof(int)) < 0) {
+    perror("setsockopt TCP_NODELAY failed");
+  }
 
-  // Make the socket address reusable to avoid errors if the server is run
-  // quickly multiple times
+  // Create UDP socket for receiving messages
+  int udp_listenfd = socket(AF_INET, SOCK_DGRAM, 0);
+  DIE(udp_listenfd < 0, "socket");
+
+  // Enable address reuse for TCP socket
   int enable = 1;
-  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
+  if (setsockopt(tcp_listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) <
+      0)
     perror("setsockopt(SO_REUSEADDR) failed");
 
+  // Set up server address structure for both TCP and UDP sockets
+  struct sockaddr_in serv_addr;
+  socklen_t socket_len = sizeof(struct sockaddr_in);
   memset(&serv_addr, 0, socket_len);
   serv_addr.sin_family = AF_INET;
+  serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(port);
-  serv_addr.sin_addr.s_addr = INADDR_ANY;
 
-  // Bind the server address to the socket
-  rc = bind(listenfd, (const struct sockaddr *)&serv_addr, sizeof(serv_addr));
+  // Bind TCP socket
+  rc = bind(tcp_listenfd, (const struct sockaddr *)&serv_addr, socket_len);
   DIE(rc < 0, "bind");
 
-  run_chat_multi_server(listenfd);
+  // Bind UDP socket
+  rc = bind(udp_listenfd, (const struct sockaddr *)&serv_addr, socket_len);
+  DIE(rc < 0, "bind");
 
-  // Close listenfd
-  close(listenfd);
+  // Run the server
+  run_chat_multi_server(tcp_listenfd, udp_listenfd);
 
   return 0;
 }

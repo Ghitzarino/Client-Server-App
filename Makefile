@@ -8,9 +8,11 @@ common.o: common.c
 
 # Compileaza server.c
 server: server.c common.o
+	$(CC) $(CFLAGS) -o server server.c common.o
 
 # Compileaza subscriber.c
 subscriber: subscriber.c common.o
+	$(CC) $(CFLAGS) -o subscriber subscriber.c common.o
 
 .PHONY: clean run_server run_subscriber
 
