@@ -6,10 +6,10 @@ Here's an overview of the application and its features:
 
 
 Application Overview
+
 The project is a client-server system enabling users to subscribe and unsubscribe
 to various topics to receive messages. The server facilitates this interaction
 using both TCP and UDP connections:
-
 -TCP: Manages client-server communication, including subscriptions.
 -UDP: Used for efficient message delivery to subscribed clients.
 
